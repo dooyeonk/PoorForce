@@ -1,5 +1,9 @@
 #include "UI/PoorforceDialogs.h"
 
+#include "PoorforceLog.h"
+#include "RcloneProcessManager.h"
+#include "UI/SUploadProgressWidget.h"
+
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SWindow.h"
 
@@ -73,5 +77,59 @@ namespace PoorforceDialogs
 		FSlateApplication::Get().AddModalWindow(Host, GetParentWindowForModal(), /*bSlowTaskWindow=*/ false);
 
 		return Result;
+	}
+
+	EUploadRetryChoice ShowUploadRetryDialog(
+		const FString& RelativePath,
+		int32 ExitCode,
+		const FString& Output)
+	{
+		EUploadRetryChoice Choice = EUploadRetryChoice::Dismiss;
+
+		const TSharedRef<SWindow> Host = MakeHostWindow(
+			FText::FromString(TEXT("Poorforce — 업로드 실패")),
+			FVector2D(560.f, 420.f));
+
+		Host->SetContent(
+			SNew(SUploadRetryDialog)
+			.RelativePath(RelativePath)
+			.ExitCode(ExitCode)
+			.Output(Output)
+			.ParentWindow(Host)
+			.OutChoice(&Choice));
+
+		FSlateApplication::Get().AddModalWindow(Host, GetParentWindowForModal(), /*bSlowTaskWindow=*/ false);
+
+		return Choice;
+	}
+
+	bool WaitForUploadsModal(TSharedPtr<FRcloneProcessManager> Rclone)
+	{
+		if (!Rclone.IsValid() || !Rclone->HasActive()) return false;
+
+		UE_LOG(LogPoorforce, Log, TEXT("Editor exit delayed — %d rclone process(es) still running"), Rclone->NumActive());
+
+		bool bForceCancelled = false;
+
+		const TSharedRef<SWindow> Host = MakeHostWindow(
+			FText::FromString(TEXT("Poorforce — 업로드 진행 중")),
+			FVector2D(560.f, 320.f));
+
+		Host->SetContent(
+			SNew(SUploadProgressWidget)
+			.Rclone(Rclone)
+			.ParentWindow(Host)
+			.OutForceCancelled(&bForceCancelled));
+
+		FSlateApplication::Get().AddModalWindow(Host, GetParentWindowForModal(), /*bSlowTaskWindow=*/ false);
+
+		if (bForceCancelled)
+		{
+			UE_LOG(LogPoorforce, Warning, TEXT("User force-quit during upload — cancelling %d active process(es). Locks may remain (TTL will release)."),
+				Rclone->NumActive());
+			Rclone->CancelAll();
+		}
+
+		return bForceCancelled;
 	}
 }
