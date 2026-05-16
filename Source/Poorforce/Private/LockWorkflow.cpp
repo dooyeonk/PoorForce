@@ -3,8 +3,10 @@
 #include "PoorforceLog.h"
 #include "PoorforceConfig.h"
 #include "PoorforcePathResolver.h"
+#include "PoorforceTimeFormat.h"
 #include "LockServerClient.h"
 #include "RcloneProcessManager.h"
+#include "UI/PoorforceDialogs.h"
 
 #include "Editor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
@@ -90,7 +92,7 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset)
 			}
 
 			Client->Get(Resolved.LockKey,
-				[this, Resolved, MyUserId](bool bExists, const TOptional<PoorforceLock::FLockEntry>& Entry)
+				[this, Resolved, MyUserId, WeakAsset](bool bExists, const TOptional<PoorforceLock::FLockEntry>& Entry)
 				{
 					if (!bExists || !Entry.IsSet())
 					{
@@ -114,9 +116,7 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset)
 						return;
 					}
 
-					UE_LOG(LogPoorforce, Warning,
-						TEXT("[Case 3] BLOCKED: '%s' is held by '%s' (since %s)"),
-						*Resolved.RelativePath, *Entry->OwnerId, *Entry->Timestamp);
+					HandleBlockedByOther(Resolved, *Entry, WeakAsset);
 				});
 		});
 }
@@ -158,6 +158,55 @@ void FLockWorkflow::HandleAssetClosed(UObject* Asset)
 			{
 				UE_LOG(LogPoorforce, Warning, TEXT("Lock release failed (removed from owned set anyway): %s"), *Path);
 			}
+		});
+}
+
+void FLockWorkflow::HandleBlockedByOther(
+	const FResolvedAsset& Resolved,
+	const PoorforceLock::FLockEntry& Entry,
+	TWeakObjectPtr<UObject> WeakAsset)
+{
+	const FString ElapsedText = PoorforceTimeFormat::FormatElapsedSinceTimestampString(Entry.Timestamp);
+
+	UE_LOG(LogPoorforce, Warning,
+		TEXT("[Case 3] BLOCKED: '%s' is held by '%s' (%s)"),
+		*Resolved.RelativePath, *Entry.OwnerId, *ElapsedText);
+
+	CloseAssetEditor(WeakAsset);
+
+	const EBlockedDialogResult Choice = PoorforceDialogs::ShowBlockedDialog(
+		Resolved.RelativePath, Entry.OwnerId, ElapsedText);
+
+	if (Choice != EBlockedDialogResult::ForceUnlockRequested)
+	{
+		return;
+	}
+
+	const FForceUnlockDialogResult ForceResult = PoorforceDialogs::ShowForceUnlockDialog(
+		Resolved.RelativePath, Entry.OwnerId);
+
+	if (!ForceResult.bConfirmed)
+	{
+		return;
+	}
+
+	UE_LOG(LogPoorforce, Warning,
+		TEXT("Force unlock: '%s' (was held by '%s') by '%s'. Reason: %s"),
+		*Resolved.RelativePath, *Entry.OwnerId, *UserId,
+		ForceResult.Reason.IsEmpty() ? TEXT("(없음)") : *ForceResult.Reason);
+
+	Client->Release(Resolved.LockKey,
+		[this, Resolved, WeakAsset](bool bReleased)
+		{
+			if (!bReleased)
+			{
+				UE_LOG(LogPoorforce, Warning, TEXT("Force unlock DEL failed: %s"), *Resolved.RelativePath);
+				NotifyUserWarning(FString::Printf(TEXT("강제 해제 실패: %s"), *Resolved.RelativePath));
+				return;
+			}
+
+			UE_LOG(LogPoorforce, Log, TEXT("Force unlock succeeded, reopening: %s"), *Resolved.RelativePath);
+			ReopenAssetEditor(WeakAsset);
 		});
 }
 

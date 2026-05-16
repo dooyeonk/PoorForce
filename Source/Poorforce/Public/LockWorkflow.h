@@ -6,6 +6,7 @@
 namespace PoorforceLock
 {
 	enum class EAcquireResult : uint8;
+	struct FLockEntry;
 }
 
 class FLockServerClient;
@@ -51,6 +52,11 @@ private:
 
 	void StartDownloadAndReopen(const FResolvedAsset& Resolved, TWeakObjectPtr<UObject> WeakAsset);
 	void StartUploadAndRelease(const FResolvedAsset& Resolved);
+
+	void HandleBlockedByOther(
+		const FResolvedAsset& Resolved,
+		const PoorforceLock::FLockEntry& Entry,
+		TWeakObjectPtr<UObject> WeakAsset);
 
 	void NotifyUser(const FString& Message) const;
 	void NotifyUserWarning(const FString& Message) const;
