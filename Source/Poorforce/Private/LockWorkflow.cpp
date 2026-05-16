@@ -294,9 +294,30 @@ void FLockWorkflow::StartUploadAndRelease(const FResolvedAsset& Resolved)
 			if (!bSuccess)
 			{
 				UE_LOG(LogPoorforce, Warning,
-					TEXT("Upload failed for %s (exit=%d). Lock kept; manual retry required."),
+					TEXT("Upload failed for %s (exit=%d). Asking user."),
 					*Resolved.RelativePath, ExitCode);
-				NotifyUserWarning(FString::Printf(TEXT("Upload failed (lock kept): %s"), *Resolved.RelativePath));
+
+				const EUploadRetryChoice Choice = PoorforceDialogs::ShowUploadRetryDialog(
+					Resolved.RelativePath, ExitCode, Output);
+
+				switch (Choice)
+				{
+				case EUploadRetryChoice::Retry:
+					UE_LOG(LogPoorforce, Log, TEXT("User chose retry: %s"), *Resolved.RelativePath);
+					StartUploadAndRelease(Resolved);
+					return;
+
+				case EUploadRetryChoice::ReleaseAnyway:
+					UE_LOG(LogPoorforce, Warning, TEXT("User chose release-without-upload: %s"), *Resolved.RelativePath);
+					Client->Release(Resolved.LockKey,
+						[this, Key = Resolved.LockKey](bool) { OwnedLockKeys.Remove(Key); });
+					return;
+
+				case EUploadRetryChoice::Dismiss:
+					UE_LOG(LogPoorforce, Warning, TEXT("User dismissed; lock kept (TTL will release): %s"), *Resolved.RelativePath);
+					return;
+				}
+
 				return;
 			}
 
