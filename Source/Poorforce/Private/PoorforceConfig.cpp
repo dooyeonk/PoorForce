@@ -68,6 +68,12 @@ namespace PoorforceConfigLoader
 		Root->TryGetStringField(TEXT("LockKeyNamespace"), OutConfig.LockKeyNamespace);
 		Root->TryGetStringField(TEXT("DiscordWebhookUrl"), OutConfig.DiscordWebhookUrl);
 
+		FString RcloneExe;
+		if (Root->TryGetStringField(TEXT("RcloneExecutable"), RcloneExe) && !RcloneExe.IsEmpty())
+		{
+			OutConfig.RcloneExecutable = RcloneExe;
+		}
+
 		const TArray<TSharedPtr<FJsonValue>>* ManagedPathsJson = nullptr;
 		if (Root->TryGetArrayField(TEXT("ManagedPaths"), ManagedPathsJson) && ManagedPathsJson != nullptr)
 		{

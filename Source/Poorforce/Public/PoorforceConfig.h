@@ -20,6 +20,7 @@ struct FPoorforceConfig
 	FString UpstashUrl;
 	FString UpstashToken;
 	FString LockKeyNamespace;
+	FString RcloneExecutable = TEXT("rclone");
 	TArray<FPoorforceManagedPath> ManagedPaths;
 	FString DiscordWebhookUrl;
 
