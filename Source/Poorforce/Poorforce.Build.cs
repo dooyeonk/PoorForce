@@ -23,6 +23,8 @@ public class Poorforce : ModuleRules
 				"HTTP",
 				"Json",
 				"JsonUtilities",
+				"UnrealEd",
+				"AssetRegistry",
 			}
 		);
 	}
