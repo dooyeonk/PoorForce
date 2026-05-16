@@ -6,6 +6,8 @@
 #include "PoorforceConfig.h"
 
 class FLockServerClient;
+class FLockWorkflow;
+class FAssetEditorInterceptor;
 
 class FPoorforceModule : public IModuleInterface
 {
@@ -23,4 +25,6 @@ private:
 	bool bEnabled = false;
 	FPoorforceConfig Config;
 	TSharedPtr<FLockServerClient> LockClient;
+	TUniquePtr<FLockWorkflow> Workflow;
+	TUniquePtr<FAssetEditorInterceptor> Interceptor;
 };
