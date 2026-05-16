@@ -26,8 +26,9 @@ public:
 		TSharedPtr<FDetachedWatcherSpawner> InWatcher,
 		FString InUserId);
 
-	void HandleAssetOpened(UObject* Asset);
+	void HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload = false);
 	void HandleAssetClosed(UObject* Asset);
+	void HandleAssetRenamed(const FString& OldPackageName, UObject* NewAsset);
 
 private:
 	struct FResolvedAsset

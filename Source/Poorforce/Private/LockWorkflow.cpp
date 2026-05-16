@@ -63,7 +63,7 @@ bool FLockWorkflow::Resolve(UObject* Asset, FResolvedAsset& Out) const
 	return true;
 }
 
-void FLockWorkflow::HandleAssetOpened(UObject* Asset)
+void FLockWorkflow::HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload)
 {
 	if (!Client.IsValid()) return;
 
@@ -80,7 +80,7 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset)
 	TWeakObjectPtr<UObject> WeakAsset(Asset);
 
 	Client->TryAcquire(Resolved.LockKey, MyUserId, LockTtlSeconds,
-		[this, Resolved, MyUserId, WeakAsset](PoorforceLock::EAcquireResult Result)
+		[this, Resolved, MyUserId, WeakAsset, bSkipInitialDownload](PoorforceLock::EAcquireResult Result)
 		{
 			switch (Result)
 			{
@@ -94,7 +94,10 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset)
 					{
 						Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
 					}
-					StartDownloadAndReopen(Resolved, WeakAsset);
+					if (!bSkipInitialDownload)
+					{
+						StartDownloadAndReopen(Resolved, WeakAsset);
+					}
 				}
 				return;
 
@@ -179,6 +182,44 @@ void FLockWorkflow::HandleAssetClosed(UObject* Asset)
 				UE_LOG(LogPoorforce, Warning, TEXT("Lock release failed (removed from owned set anyway): %s"), *Path);
 			}
 		});
+}
+
+void FLockWorkflow::HandleAssetRenamed(const FString& OldPackageName, UObject* NewAsset)
+{
+	if (!Client.IsValid()) return;
+
+	const FPoorforceManagedPath* OldMatch = PoorforcePathResolver::ResolveLongestPrefix(OldPackageName, Config.ManagedPaths);
+	if (OldMatch != nullptr)
+	{
+		const FString OldRelative = PoorforcePathResolver::MakeRelativePath(OldPackageName, *OldMatch);
+		const FString OldKey      = PoorforcePathResolver::MakeLockKey(Config.LockKeyNamespace, OldRelative);
+
+		if (OwnedLockKeys.Contains(OldKey))
+		{
+			UE_LOG(LogPoorforce, Log, TEXT("Releasing old lock after rename: %s"), *OldRelative);
+
+			Client->Release(OldKey,
+				[this, OldKey, OldRelative](bool bReleased)
+				{
+					OwnedLockKeys.Remove(OldKey);
+					if (Watcher.IsValid()) Watcher->SignalWatcherExit(OldKey);
+
+					if (bReleased)
+					{
+						UE_LOG(LogPoorforce, Log, TEXT("Old lock released after rename: %s"), *OldRelative);
+					}
+					else
+					{
+						UE_LOG(LogPoorforce, Warning, TEXT("Old lock release after rename failed: %s"), *OldRelative);
+					}
+				});
+		}
+	}
+
+	if (IsValid(NewAsset))
+	{
+		HandleAssetOpened(NewAsset, /*bSkipInitialDownload=*/ true);
+	}
 }
 
 void FLockWorkflow::HandleBlockedByOther(
