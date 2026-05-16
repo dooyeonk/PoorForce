@@ -1,20 +1,48 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
-
 #include "Poorforce.h"
+
+#include "PoorforceLog.h"
+#include "LockServerClient.h"
+#include "UserIdProvider.h"
+
+DEFINE_LOG_CATEGORY(LogPoorforce);
 
 #define LOCTEXT_NAMESPACE "FPoorforceModule"
 
 void FPoorforceModule::StartupModule()
 {
-	// This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module
+	UE_LOG(LogPoorforce, Log, TEXT("Poorforce starting up..."));
+
+	if (!PoorforceConfigLoader::LoadFromProjectRoot(Config))
+	{
+		UE_LOG(LogPoorforce, Warning, TEXT("Poorforce disabled — config not loaded. Expected at: %s"),
+			*PoorforceConfigLoader::GetExpectedConfigPath());
+		bEnabled = false;
+		return;
+	}
+
+	const FString& UserId = PoorforceUserId::Get();
+
+	LockClient = MakeShared<FLockServerClient>(Config.UpstashUrl, Config.UpstashToken);
+
+	bEnabled = true;
+
+	UE_LOG(LogPoorforce, Log, TEXT("Poorforce ready. UserId='%s', ManagedPaths=%d"),
+		*UserId, Config.ManagedPaths.Num());
 }
 
 void FPoorforceModule::ShutdownModule()
 {
-	// This function may be called during shutdown to clean up your module.  For modules that support dynamic reloading,
-	// we call this function before unloading the module.
+	LockClient.Reset();
+	bEnabled = false;
+
+	UE_LOG(LogPoorforce, Log, TEXT("Poorforce shut down."));
+}
+
+FPoorforceModule& FPoorforceModule::Get()
+{
+	return FModuleManager::LoadModuleChecked<FPoorforceModule>(TEXT("Poorforce"));
 }
 
 #undef LOCTEXT_NAMESPACE
-	
+
 IMPLEMENT_MODULE(FPoorforceModule, Poorforce)
