@@ -37,6 +37,7 @@ private:
 		FString LockKey;
 		FString LocalFilePath;
 		FString RemoteFilePath;
+		TArray<TPair<FString, FString>> SidecarPaths;
 		const FPoorforceManagedPath* Match = nullptr;
 	};
 
@@ -55,6 +56,12 @@ private:
 
 	void StartDownloadAndReopen(const FResolvedAsset& Resolved, TWeakObjectPtr<UObject> WeakAsset);
 	void StartUploadAndRelease(const FResolvedAsset& Resolved);
+
+	void CopyNextSidecar(
+		FResolvedAsset Resolved,
+		int32 Direction,
+		int32 Index,
+		TFunction<void()> OnAllDone);
 
 	void HandleBlockedByOther(
 		const FResolvedAsset& Resolved,

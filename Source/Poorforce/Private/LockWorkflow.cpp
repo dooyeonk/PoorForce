@@ -7,6 +7,7 @@
 #include "LockServerClient.h"
 #include "RcloneProcessManager.h"
 #include "DetachedWatcherSpawner.h"
+#include "DiscordNotifier.h"
 #include "UI/PoorforceDialogs.h"
 
 #include "Editor.h"
@@ -50,6 +51,13 @@ bool FLockWorkflow::Resolve(UObject* Asset, FResolvedAsset& Out) const
 		const FString Extension = PoorforcePathResolver::GetPackageExtensionFor(Asset);
 		PoorforcePathResolver::MakeLocalFilePath(Out.PackageName, Asset, Out.LocalFilePath);
 		Out.RemoteFilePath = PoorforcePathResolver::MakeRemoteFilePath(Out.Match->RcloneRemote, Out.RelativePath, Extension);
+
+		const TArray<PoorforcePathResolver::FSidecarPair> Sidecars =
+			PoorforcePathResolver::MakeSidecarPaths(Out.PackageName, Asset, Out.Match->RcloneRemote, Out.RelativePath);
+		for (const PoorforcePathResolver::FSidecarPair& Pair : Sidecars)
+		{
+			Out.SidecarPaths.Emplace(Pair.LocalPath, Pair.RemotePath);
+		}
 	}
 
 	return true;
@@ -207,8 +215,13 @@ void FLockWorkflow::HandleBlockedByOther(
 		*Resolved.RelativePath, *Entry.OwnerId, *UserId,
 		ForceResult.Reason.IsEmpty() ? TEXT("(없음)") : *ForceResult.Reason);
 
+	const FString OriginalOwner = Entry.OwnerId;
+	const FString ReasonText = ForceResult.Reason;
+	const FString WebhookUrl = Config.DiscordWebhookUrl;
+	const FString Actor = UserId;
+
 	Client->Release(Resolved.LockKey,
-		[this, Resolved, WeakAsset](bool bReleased)
+		[this, Resolved, WeakAsset, OriginalOwner, ReasonText, WebhookUrl, Actor](bool bReleased)
 		{
 			if (!bReleased)
 			{
@@ -218,6 +231,10 @@ void FLockWorkflow::HandleBlockedByOther(
 			}
 
 			UE_LOG(LogPoorforce, Log, TEXT("Force unlock succeeded, reopening: %s"), *Resolved.RelativePath);
+
+			PoorforceDiscord::SendForceUnlockNotice(
+				WebhookUrl, Resolved.RelativePath, OriginalOwner, Actor, ReasonText);
+
 			ReopenAssetEditor(WeakAsset);
 		});
 }
@@ -248,14 +265,20 @@ void FLockWorkflow::StartDownloadAndReopen(const FResolvedAsset& Resolved, TWeak
 		Resolved.RemoteFilePath,
 		[this, Resolved, WeakAsset](bool bSuccess, int32 ExitCode, const FString& Output)
 		{
-			InFlightSyncs.Remove(Resolved.LockKey);
-
 			if (bSuccess)
 			{
 				UE_LOG(LogPoorforce, Log, TEXT("Download complete: %s"), *Resolved.RelativePath);
-				ReopenAssetEditor(WeakAsset);
+
+				CopyNextSidecar(Resolved, static_cast<int32>(FRcloneProcessManager::EDirection::Download), 0,
+					[this, LockKey = Resolved.LockKey, WeakAsset]()
+					{
+						InFlightSyncs.Remove(LockKey);
+						ReopenAssetEditor(WeakAsset);
+					});
 				return;
 			}
+
+			InFlightSyncs.Remove(Resolved.LockKey);
 
 			UE_LOG(LogPoorforce, Warning,
 				TEXT("Download failed for %s (exit=%d). Releasing lock so others aren't blocked."),
@@ -340,21 +363,56 @@ void FLockWorkflow::StartUploadAndRelease(const FResolvedAsset& Resolved)
 
 			UE_LOG(LogPoorforce, Log, TEXT("Upload complete: %s"), *Resolved.RelativePath);
 
-			Client->Release(Resolved.LockKey,
-				[this, Key = Resolved.LockKey, Path = Resolved.RelativePath](bool bReleased)
+			CopyNextSidecar(Resolved, static_cast<int32>(FRcloneProcessManager::EDirection::Upload), 0,
+				[this, Resolved]()
 				{
-					OwnedLockKeys.Remove(Key);
-					if (Watcher.IsValid()) Watcher->SignalWatcherExit(Key);
+					Client->Release(Resolved.LockKey,
+						[this, Key = Resolved.LockKey, Path = Resolved.RelativePath](bool bReleased)
+						{
+							OwnedLockKeys.Remove(Key);
+							if (Watcher.IsValid()) Watcher->SignalWatcherExit(Key);
 
-					if (bReleased)
-					{
-						UE_LOG(LogPoorforce, Log, TEXT("Lock released after upload: %s"), *Path);
-					}
-					else
-					{
-						UE_LOG(LogPoorforce, Warning, TEXT("Lock release after upload failed (removed from owned set anyway): %s"), *Path);
-					}
+							if (bReleased)
+							{
+								UE_LOG(LogPoorforce, Log, TEXT("Lock released after upload: %s"), *Path);
+							}
+							else
+							{
+								UE_LOG(LogPoorforce, Warning, TEXT("Lock release after upload failed (removed from owned set anyway): %s"), *Path);
+							}
+						});
 				});
+		});
+}
+
+void FLockWorkflow::CopyNextSidecar(
+	FResolvedAsset Resolved,
+	int32 Direction,
+	int32 Index,
+	TFunction<void()> OnAllDone)
+{
+	if (Index >= Resolved.SidecarPaths.Num() || !Rclone.IsValid())
+	{
+		OnAllDone();
+		return;
+	}
+
+	const TPair<FString, FString>& Pair = Resolved.SidecarPaths[Index];
+
+	Rclone->StartCopyTo(
+		static_cast<FRcloneProcessManager::EDirection>(Direction),
+		Pair.Key,
+		Pair.Value,
+		[this, Resolved = MoveTemp(Resolved), Direction, Index, OnAllDone = MoveTemp(OnAllDone)](bool bSuccess, int32 ExitCode, const FString& Output) mutable
+		{
+			if (!bSuccess)
+			{
+				UE_LOG(LogPoorforce, Warning,
+					TEXT("Sidecar copy failed (best-effort, continuing): exit=%d for %s"),
+					ExitCode, *Resolved.SidecarPaths[Index].Key);
+			}
+
+			CopyNextSidecar(MoveTemp(Resolved), Direction, Index + 1, MoveTemp(OnAllDone));
 		});
 }
 
