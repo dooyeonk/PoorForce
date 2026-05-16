@@ -27,6 +27,8 @@ public:
 	int32 NumActive() const { return Active.Num(); }
 	bool HasActive() const { return Active.Num() > 0; }
 
+	TArray<FString> GetActiveDescriptions() const;
+
 	void CancelAll();
 
 private:

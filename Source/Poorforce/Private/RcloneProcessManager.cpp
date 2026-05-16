@@ -108,9 +108,11 @@ bool FRcloneProcessManager::Tick(float DeltaTime)
 		FPlatformProcess::GetProcReturnCode(Proc.Handle, &ExitCode);
 
 		const bool bSuccess = (ExitCode == 0);
-		FinalizeProcess(Proc, bSuccess, ExitCode);
 
+		TUniquePtr<FActiveProcess> Detached = MoveTemp(Active[i]);
 		Active.RemoveAt(i);
+
+		FinalizeProcess(*Detached, bSuccess, ExitCode);
 	}
 
 	return true;
@@ -137,6 +139,17 @@ void FRcloneProcessManager::FinalizeProcess(FActiveProcess& Proc, bool bSuccess,
 	{
 		Proc.OnComplete(bSuccess, ExitCode, Proc.AccumulatedOutput);
 	}
+}
+
+TArray<FString> FRcloneProcessManager::GetActiveDescriptions() const
+{
+	TArray<FString> Out;
+	Out.Reserve(Active.Num());
+	for (const TUniquePtr<FActiveProcess>& Proc : Active)
+	{
+		Out.Add(Proc->Description);
+	}
+	return Out;
 }
 
 void FRcloneProcessManager::CancelAll()
