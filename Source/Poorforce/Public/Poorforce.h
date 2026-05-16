@@ -7,6 +7,7 @@
 
 class FLockServerClient;
 class FRcloneProcessManager;
+class FDetachedWatcherSpawner;
 class FLockWorkflow;
 class FAssetEditorInterceptor;
 
@@ -28,6 +29,7 @@ private:
 	FPoorforceConfig Config;
 	TSharedPtr<FLockServerClient> LockClient;
 	TSharedPtr<FRcloneProcessManager> Rclone;
+	TSharedPtr<FDetachedWatcherSpawner> Watcher;
 	TUniquePtr<FLockWorkflow> Workflow;
 	TUniquePtr<FAssetEditorInterceptor> Interceptor;
 

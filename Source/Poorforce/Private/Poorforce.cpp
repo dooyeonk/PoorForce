@@ -3,6 +3,7 @@
 #include "PoorforceLog.h"
 #include "LockServerClient.h"
 #include "RcloneProcessManager.h"
+#include "DetachedWatcherSpawner.h"
 #include "LockWorkflow.h"
 #include "AssetEditorInterceptor.h"
 #include "UserIdProvider.h"
@@ -30,7 +31,8 @@ void FPoorforceModule::StartupModule()
 
 	LockClient = MakeShared<FLockServerClient>(Config.UpstashUrl, Config.UpstashToken);
 	Rclone = MakeShared<FRcloneProcessManager>(Config.RcloneExecutable);
-	Workflow = MakeUnique<FLockWorkflow>(Config, LockClient, Rclone, UserId);
+	Watcher = MakeShared<FDetachedWatcherSpawner>(Config.RcloneExecutable, Config.UpstashUrl, Config.UpstashToken, UserId);
+	Workflow = MakeUnique<FLockWorkflow>(Config, LockClient, Rclone, Watcher, UserId);
 
 	Interceptor = MakeUnique<FAssetEditorInterceptor>();
 	Interceptor->Register(Workflow.Get());
@@ -72,6 +74,7 @@ void FPoorforceModule::ShutdownModule()
 		Rclone.Reset();
 	}
 
+	Watcher.Reset();
 	LockClient.Reset();
 	bEnabled = false;
 
