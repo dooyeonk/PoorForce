@@ -112,16 +112,30 @@ void FAssetEditorInterceptor::OnAssetClosedInEditor(UObject* Asset, IAssetEditor
 
 void FAssetEditorInterceptor::OnAssetRenamed(const FAssetData& Data, const FString& OldName)
 {
-	UE_LOG(LogPoorforce, Log, TEXT("Asset renamed: '%s' -> '%s' (full handling deferred)"),
-		*OldName, *Data.GetObjectPathString());
+	if (Workflow == nullptr) return;
+
+	FString OldPackageName = OldName;
+	int32 DotIdx = INDEX_NONE;
+	if (OldName.FindChar(TEXT('.'), DotIdx))
+	{
+		OldPackageName = OldName.Left(DotIdx);
+	}
+
+	UE_LOG(LogPoorforce, Log, TEXT("Asset renamed: '%s' -> '%s'"), *OldPackageName, *Data.PackageName.ToString());
+
+	UObject* NewAsset = Data.GetAsset();
+	Workflow->HandleAssetRenamed(OldPackageName, NewAsset);
 }
 
 void FAssetEditorInterceptor::OnInMemoryAssetCreated(UObject* Asset)
 {
+	if (Workflow == nullptr) return;
 	if (!IsValid(Asset)) return;
 
 	const UPackage* Package = Asset->GetPackage();
-	const FString PackageName = IsValid(Package) ? Package->GetName() : TEXT("(no package)");
+	if (!IsValid(Package)) return;
 
-	UE_LOG(LogPoorforce, Log, TEXT("In-memory asset created: %s (full handling deferred)"), *PackageName);
+	UE_LOG(LogPoorforce, Verbose, TEXT("In-memory asset created: %s"), *Package->GetName());
+
+	Workflow->HandleAssetOpened(Asset, /*bSkipInitialDownload=*/ true);
 }
