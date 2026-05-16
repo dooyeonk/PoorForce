@@ -2,6 +2,10 @@
 
 #include "PoorforceConfig.h"
 
+#include "Engine/World.h"
+#include "Misc/PackageName.h"
+#include "UObject/Object.h"
+
 namespace PoorforcePathResolver
 {
 	const FPoorforceManagedPath* ResolveLongestPrefix(
@@ -45,5 +49,32 @@ namespace PoorforcePathResolver
 		}
 
 		return FString::Printf(TEXT("%s:asset:%s"), *Namespace, *RelativePath);
+	}
+
+	FString GetPackageExtensionFor(const UObject* Asset)
+	{
+		if (IsValid(Asset) && Asset->IsA<UWorld>())
+		{
+			return FPackageName::GetMapPackageExtension();
+		}
+
+		return FPackageName::GetAssetPackageExtension();
+	}
+
+	bool MakeLocalFilePath(const FString& PackageName, const UObject* Asset, FString& OutLocalPath)
+	{
+		const FString Extension = GetPackageExtensionFor(Asset);
+		return FPackageName::TryConvertLongPackageNameToFilename(PackageName, OutLocalPath, Extension);
+	}
+
+	FString MakeRemoteFilePath(const FString& RcloneRemote, const FString& RelativePath, const FString& Extension)
+	{
+		FString Trimmed = RcloneRemote;
+		while (Trimmed.EndsWith(TEXT("/")))
+		{
+			Trimmed.LeftChopInline(1);
+		}
+
+		return FString::Printf(TEXT("%s/%s%s"), *Trimmed, *RelativePath, *Extension);
 	}
 }
