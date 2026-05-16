@@ -22,6 +22,8 @@ public:
 
 	bool IsWatcherActive(const FString& LockKey) const;
 
+	void CleanupStaleArtifacts();
+
 private:
 	struct FActiveWatcher
 	{

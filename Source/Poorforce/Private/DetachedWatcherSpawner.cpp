@@ -219,3 +219,29 @@ bool FDetachedWatcherSpawner::IsWatcherActive(const FString& LockKey) const
 {
 	return Active.Contains(LockKey);
 }
+
+void FDetachedWatcherSpawner::CleanupStaleArtifacts()
+{
+	const FString Dir = GetScriptDir();
+	IFileManager& FM = IFileManager::Get();
+	if (!FM.DirectoryExists(*Dir)) return;
+
+	TArray<FString> StaleFiles;
+	FM.FindFiles(StaleFiles, *(Dir / TEXT("watcher_*.ps1")), /*Files=*/ true, /*Directories=*/ false);
+	FM.FindFiles(StaleFiles, *(Dir / TEXT("watcher_*.sentinel")), /*Files=*/ true, /*Directories=*/ false);
+
+	int32 Deleted = 0;
+	for (const FString& Name : StaleFiles)
+	{
+		const FString Full = Dir / Name;
+		if (FM.Delete(*Full, /*RequireExists=*/ false, /*EvenReadOnly=*/ true, /*Quiet=*/ true))
+		{
+			++Deleted;
+		}
+	}
+
+	if (Deleted > 0)
+	{
+		UE_LOG(LogPoorforce, Log, TEXT("Cleaned up %d stale watcher artifact(s) in %s"), Deleted, *Dir);
+	}
+}

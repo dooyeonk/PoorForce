@@ -32,6 +32,7 @@ void FPoorforceModule::StartupModule()
 	LockClient = MakeShared<FLockServerClient>(Config.UpstashUrl, Config.UpstashToken);
 	Rclone = MakeShared<FRcloneProcessManager>(Config.RcloneExecutable);
 	Watcher = MakeShared<FDetachedWatcherSpawner>(Config.RcloneExecutable, Config.UpstashUrl, Config.UpstashToken, UserId);
+	Watcher->CleanupStaleArtifacts();
 	Workflow = MakeUnique<FLockWorkflow>(Config, LockClient, Rclone, Watcher, UserId);
 
 	Interceptor = MakeUnique<FAssetEditorInterceptor>();
