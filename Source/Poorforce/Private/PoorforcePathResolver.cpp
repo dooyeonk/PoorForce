@@ -77,4 +77,36 @@ namespace PoorforcePathResolver
 
 		return FString::Printf(TEXT("%s/%s%s"), *Trimmed, *RelativePath, *Extension);
 	}
+
+	TArray<FSidecarPair> MakeSidecarPaths(
+		const FString& PackageName,
+		const UObject* Asset,
+		const FString& RcloneRemote,
+		const FString& RelativePath)
+	{
+		TArray<FSidecarPair> Out;
+
+		if (!IsValid(Asset) || !Asset->IsA<UWorld>())
+		{
+			return Out;
+		}
+
+		const FString BuiltDataSuffix      = TEXT("_BuiltData");
+		const FString BuiltDataPackageName = PackageName + BuiltDataSuffix;
+		const FString BuiltDataRelative    = RelativePath + BuiltDataSuffix;
+		const FString AssetExt             = FPackageName::GetAssetPackageExtension();
+
+		FString BuiltDataLocal;
+		if (!FPackageName::TryConvertLongPackageNameToFilename(BuiltDataPackageName, BuiltDataLocal, AssetExt))
+		{
+			return Out;
+		}
+
+		FSidecarPair Pair;
+		Pair.LocalPath  = BuiltDataLocal;
+		Pair.RemotePath = MakeRemoteFilePath(RcloneRemote, BuiltDataRelative, AssetExt);
+		Out.Add(MoveTemp(Pair));
+
+		return Out;
+	}
 }
