@@ -6,6 +6,7 @@
 #include "PoorforceConfig.h"
 
 class FLockServerClient;
+class FRcloneProcessManager;
 class FLockWorkflow;
 class FAssetEditorInterceptor;
 
@@ -20,11 +21,13 @@ public:
 	bool IsEnabled() const { return bEnabled; }
 	const FPoorforceConfig& GetConfig() const { return Config; }
 	TSharedPtr<FLockServerClient> GetLockClient() const { return LockClient; }
+	TSharedPtr<FRcloneProcessManager> GetRcloneManager() const { return Rclone; }
 
 private:
 	bool bEnabled = false;
 	FPoorforceConfig Config;
 	TSharedPtr<FLockServerClient> LockClient;
+	TSharedPtr<FRcloneProcessManager> Rclone;
 	TUniquePtr<FLockWorkflow> Workflow;
 	TUniquePtr<FAssetEditorInterceptor> Interceptor;
 };

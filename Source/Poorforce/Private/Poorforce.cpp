@@ -2,6 +2,7 @@
 
 #include "PoorforceLog.h"
 #include "LockServerClient.h"
+#include "RcloneProcessManager.h"
 #include "LockWorkflow.h"
 #include "AssetEditorInterceptor.h"
 #include "UserIdProvider.h"
@@ -25,15 +26,16 @@ void FPoorforceModule::StartupModule()
 	const FString& UserId = PoorforceUserId::Get();
 
 	LockClient = MakeShared<FLockServerClient>(Config.UpstashUrl, Config.UpstashToken);
-	Workflow = MakeUnique<FLockWorkflow>(Config, LockClient, UserId);
+	Rclone = MakeShared<FRcloneProcessManager>(Config.RcloneExecutable);
+	Workflow = MakeUnique<FLockWorkflow>(Config, LockClient, Rclone, UserId);
 
 	Interceptor = MakeUnique<FAssetEditorInterceptor>();
 	Interceptor->Register(Workflow.Get());
 
 	bEnabled = true;
 
-	UE_LOG(LogPoorforce, Log, TEXT("Poorforce ready. UserId='%s', ManagedPaths=%d"),
-		*UserId, Config.ManagedPaths.Num());
+	UE_LOG(LogPoorforce, Log, TEXT("Poorforce ready. UserId='%s', ManagedPaths=%d, Rclone='%s'"),
+		*UserId, Config.ManagedPaths.Num(), *Config.RcloneExecutable);
 }
 
 void FPoorforceModule::ShutdownModule()
@@ -45,6 +47,13 @@ void FPoorforceModule::ShutdownModule()
 	}
 
 	Workflow.Reset();
+
+	if (Rclone.IsValid())
+	{
+		Rclone->CancelAll();
+		Rclone.Reset();
+	}
+
 	LockClient.Reset();
 	bEnabled = false;
 
