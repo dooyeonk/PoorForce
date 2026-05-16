@@ -6,6 +6,9 @@
 #include "LockWorkflow.h"
 #include "AssetEditorInterceptor.h"
 #include "UserIdProvider.h"
+#include "UI/PoorforceDialogs.h"
+
+#include "Editor.h"
 
 DEFINE_LOG_CATEGORY(LogPoorforce);
 
@@ -32,6 +35,15 @@ void FPoorforceModule::StartupModule()
 	Interceptor = MakeUnique<FAssetEditorInterceptor>();
 	Interceptor->Register(Workflow.Get());
 
+	PreExitHandle = FEditorDelegates::OnEditorPreExit.AddLambda(
+		[this]()
+		{
+			if (Rclone.IsValid() && Rclone->HasActive())
+			{
+				PoorforceDialogs::WaitForUploadsModal(Rclone);
+			}
+		});
+
 	bEnabled = true;
 
 	UE_LOG(LogPoorforce, Log, TEXT("Poorforce ready. UserId='%s', ManagedPaths=%d, Rclone='%s'"),
@@ -40,6 +52,12 @@ void FPoorforceModule::StartupModule()
 
 void FPoorforceModule::ShutdownModule()
 {
+	if (PreExitHandle.IsValid())
+	{
+		FEditorDelegates::OnEditorPreExit.Remove(PreExitHandle);
+		PreExitHandle.Reset();
+	}
+
 	if (Interceptor.IsValid())
 	{
 		Interceptor->Unregister();

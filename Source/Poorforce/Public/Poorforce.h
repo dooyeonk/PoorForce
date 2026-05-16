@@ -30,4 +30,6 @@ private:
 	TSharedPtr<FRcloneProcessManager> Rclone;
 	TUniquePtr<FLockWorkflow> Workflow;
 	TUniquePtr<FAssetEditorInterceptor> Interceptor;
+
+	FDelegateHandle PreExitHandle;
 };
