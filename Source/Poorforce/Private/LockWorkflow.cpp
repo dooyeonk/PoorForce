@@ -6,6 +6,7 @@
 #include "PoorforceTimeFormat.h"
 #include "LockServerClient.h"
 #include "RcloneProcessManager.h"
+#include "DetachedWatcherSpawner.h"
 #include "UI/PoorforceDialogs.h"
 
 #include "Editor.h"
@@ -19,10 +20,12 @@ FLockWorkflow::FLockWorkflow(
 	const FPoorforceConfig& InConfig,
 	TSharedPtr<FLockServerClient> InClient,
 	TSharedPtr<FRcloneProcessManager> InRclone,
+	TSharedPtr<FDetachedWatcherSpawner> InWatcher,
 	FString InUserId)
 	: Config(InConfig)
 	, Client(MoveTemp(InClient))
 	, Rclone(MoveTemp(InRclone))
+	, Watcher(MoveTemp(InWatcher))
 	, UserId(MoveTemp(InUserId))
 {
 }
@@ -79,6 +82,10 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset)
 
 				if (Resolved.Match->Mode == EPoorforcePathMode::LockAndSync)
 				{
+					if (Watcher.IsValid())
+					{
+						Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
+					}
 					StartDownloadAndReopen(Resolved, WeakAsset);
 				}
 				return;
@@ -104,6 +111,11 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset)
 					{
 						OwnedLockKeys.Add(Resolved.LockKey);
 						UE_LOG(LogPoorforce, Log, TEXT("[Case 2] Lock re-entry, refreshing TTL: %s"), *Resolved.RelativePath);
+
+						if (Resolved.Match->Mode == EPoorforcePathMode::LockAndSync && Watcher.IsValid() && !Watcher->IsWatcherActive(Resolved.LockKey))
+						{
+							Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
+						}
 
 						Client->Refresh(Resolved.LockKey, LockTtlSeconds,
 							[Path = Resolved.RelativePath](bool bSuccess)
@@ -255,6 +267,7 @@ void FLockWorkflow::StartDownloadAndReopen(const FResolvedAsset& Resolved, TWeak
 				[this, Key = Resolved.LockKey](bool)
 				{
 					OwnedLockKeys.Remove(Key);
+					if (Watcher.IsValid()) Watcher->SignalWatcherExit(Key);
 				});
 		});
 }
@@ -310,7 +323,11 @@ void FLockWorkflow::StartUploadAndRelease(const FResolvedAsset& Resolved)
 				case EUploadRetryChoice::ReleaseAnyway:
 					UE_LOG(LogPoorforce, Warning, TEXT("User chose release-without-upload: %s"), *Resolved.RelativePath);
 					Client->Release(Resolved.LockKey,
-						[this, Key = Resolved.LockKey](bool) { OwnedLockKeys.Remove(Key); });
+						[this, Key = Resolved.LockKey](bool)
+						{
+							OwnedLockKeys.Remove(Key);
+							if (Watcher.IsValid()) Watcher->SignalWatcherExit(Key);
+						});
 					return;
 
 				case EUploadRetryChoice::Dismiss:
@@ -327,6 +344,7 @@ void FLockWorkflow::StartUploadAndRelease(const FResolvedAsset& Resolved)
 				[this, Key = Resolved.LockKey, Path = Resolved.RelativePath](bool bReleased)
 				{
 					OwnedLockKeys.Remove(Key);
+					if (Watcher.IsValid()) Watcher->SignalWatcherExit(Key);
 
 					if (bReleased)
 					{

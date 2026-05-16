@@ -11,6 +11,7 @@ namespace PoorforceLock
 
 class FLockServerClient;
 class FRcloneProcessManager;
+class FDetachedWatcherSpawner;
 struct FPoorforceConfig;
 struct FPoorforceManagedPath;
 class UObject;
@@ -22,6 +23,7 @@ public:
 		const FPoorforceConfig& InConfig,
 		TSharedPtr<FLockServerClient> InClient,
 		TSharedPtr<FRcloneProcessManager> InRclone,
+		TSharedPtr<FDetachedWatcherSpawner> InWatcher,
 		FString InUserId);
 
 	void HandleAssetOpened(UObject* Asset);
@@ -41,6 +43,7 @@ private:
 	const FPoorforceConfig& Config;
 	TSharedPtr<FLockServerClient> Client;
 	TSharedPtr<FRcloneProcessManager> Rclone;
+	TSharedPtr<FDetachedWatcherSpawner> Watcher;
 	FString UserId;
 
 	TSet<FString> OwnedLockKeys;
