@@ -12,10 +12,37 @@
 
 #include "Editor.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Misc/ScopedSlowTask.h"
+#include "Containers/Ticker.h"
+#include "HAL/PlatformProcess.h"
 #include "UObject/Object.h"
 #include "UObject/Package.h"
+
+namespace
+{
+	void PumpUntil(bool& bDone)
+	{
+		while (!bDone)
+		{
+			FSlateApplication::Get().Tick();
+			FTSTicker::GetCoreTicker().Tick(0.033f);
+			FPlatformProcess::Sleep(0.01f);
+		}
+	}
+
+	void ReopenAssetEditor(TWeakObjectPtr<UObject> WeakAsset)
+	{
+		if (GEditor == nullptr) return;
+		UObject* Asset = WeakAsset.Get();
+		if (!IsValid(Asset)) return;
+		UAssetEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+		if (!IsValid(Subsystem)) return;
+		Subsystem->OpenEditorForAsset(Asset);
+	}
+}
 
 FLockWorkflow::FLockWorkflow(
 	const FPoorforceConfig& InConfig,
@@ -28,6 +55,10 @@ FLockWorkflow::FLockWorkflow(
 	, Rclone(MoveTemp(InRclone))
 	, Watcher(MoveTemp(InWatcher))
 	, UserId(MoveTemp(InUserId))
+{
+}
+
+FLockWorkflow::~FLockWorkflow()
 {
 }
 
@@ -120,18 +151,176 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload)
 	FResolvedAsset Resolved;
 	if (!Resolve(Asset, Resolved)) return;
 
+	// 에디터 toolkit 초기화 동안 일부 에디터(예: AnimSequence)는 내부적으로
+	// RemoveEditingObject → AddEditingObject 를 호출해서 close/open 이벤트를 발화함.
+	// OnAssetEditorOpened 가 발화할 때까지 close는 무시.
+	OpeningAssetPackageNames.Add(Resolved.PackageName);
+
 	if (InFlightSyncs.Contains(Resolved.LockKey))
 	{
-		UE_LOG(LogPoorforce, Verbose, TEXT("Skip open handling — sync in flight: %s"), *Resolved.RelativePath);
+		UE_LOG(LogPoorforce, Verbose, TEXT("Skip open handling — operation in flight: %s"), *Resolved.RelativePath);
 		return;
 	}
 
+	if (bSkipInitialDownload)
+	{
+		AcquireAsyncNoDownload(Asset, Resolved);
+		return;
+	}
+
+	SyncPrefetch(Asset, Resolved);
+}
+
+void FLockWorkflow::HandleAssetEditorOpened(UObject* Asset)
+{
+	if (!IsValid(Asset)) return;
+	const UPackage* Package = Asset->GetPackage();
+	if (!IsValid(Package)) return;
+	OpeningAssetPackageNames.Remove(Package->GetName());
+}
+
+void FLockWorkflow::SyncPrefetch(UObject* Asset, const FResolvedAsset& Resolved)
+{
 	const FString MyUserId = UserId;
 	TWeakObjectPtr<UObject> WeakAsset(Asset);
 	const int32 Ttl = GetTtlForMode(Resolved.Match->Mode);
 
+	const bool bIsLockAndSync = Resolved.Match->Mode == EPoorforcePathMode::LockAndSync;
+	const float TotalWork = bIsLockAndSync ? 2.f : 1.f;
+
+	FScopedSlowTask Task(TotalWork, FText::FromString(TEXT("Poorforce — 락 획득 중...")));
+	Task.MakeDialogDelayed(0.5f);
+
+	// Phase 1: TryAcquire (sync wait)
+	bool bAcquireDone = false;
+	PoorforceLock::EAcquireResult AcquireResult = PoorforceLock::EAcquireResult::NetworkError;
+
 	Client->TryAcquire(Resolved.LockKey, MyUserId, Ttl,
-		[this, Resolved, MyUserId, WeakAsset, bSkipInitialDownload](PoorforceLock::EAcquireResult Result)
+		[&bAcquireDone, &AcquireResult](PoorforceLock::EAcquireResult R)
+		{
+			AcquireResult = R;
+			bAcquireDone = true;
+		});
+
+	PumpUntil(bAcquireDone);
+	Task.EnterProgressFrame(1.f);
+
+	if (AcquireResult == PoorforceLock::EAcquireResult::Acquired)
+	{
+		OwnedLockKeys.Add(Resolved.LockKey);
+		UE_LOG(LogPoorforce, Log, TEXT("[Case 1] Lock acquired: %s"), *Resolved.RelativePath);
+
+		if (bIsLockAndSync)
+		{
+			if (Watcher.IsValid())
+			{
+				Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
+			}
+
+			Task.EnterProgressFrame(0.f, FText::FromString(FString::Printf(
+				TEXT("다운로드 중: %s"), *Resolved.RelativePath)));
+
+			const bool bDownloaded = DownloadSync(Resolved.LocalFilePath, Resolved.RemoteFilePath);
+
+			if (bDownloaded)
+			{
+				for (const TPair<FString, FString>& Pair : Resolved.SidecarPaths)
+				{
+					DownloadSync(Pair.Key, Pair.Value);
+				}
+			}
+			else
+			{
+				UE_LOG(LogPoorforce, Warning,
+					TEXT("Download failed for %s. Releasing lock so others aren't blocked."),
+					*Resolved.RelativePath);
+
+				NotifyUserWarning(FString::Printf(TEXT("Download failed: %s"), *Resolved.RelativePath));
+
+				Client->Release(Resolved.LockKey,
+					[this, Key = Resolved.LockKey](bool)
+					{
+						OwnedLockKeys.Remove(Key);
+						if (Watcher.IsValid()) Watcher->SignalWatcherExit(Key);
+					});
+			}
+
+			Task.EnterProgressFrame(1.f);
+		}
+
+		return;
+	}
+
+	if (AcquireResult == PoorforceLock::EAcquireResult::NetworkError)
+	{
+		UE_LOG(LogPoorforce, Warning, TEXT("Lock acquire network error: %s"), *Resolved.RelativePath);
+		return;
+	}
+
+	// AlreadyHeld: sync GET to check ownership
+	bool bGetDone = false;
+	TOptional<PoorforceLock::FLockEntry> Entry;
+
+	Client->Get(Resolved.LockKey,
+		[&bGetDone, &Entry](bool bExists, const TOptional<PoorforceLock::FLockEntry>& Ent)
+		{
+			if (bExists) Entry = Ent;
+			bGetDone = true;
+		});
+
+	PumpUntil(bGetDone);
+
+	if (!Entry.IsSet())
+	{
+		UE_LOG(LogPoorforce, Warning, TEXT("Lock vanished between SET and GET: %s"), *Resolved.RelativePath);
+		return;
+	}
+
+	if (Entry->OwnerId.Equals(MyUserId, ESearchCase::CaseSensitive))
+	{
+		// Case 2: re-entry
+		OwnedLockKeys.Add(Resolved.LockKey);
+		UE_LOG(LogPoorforce, Log, TEXT("[Case 2] Lock re-entry, refreshing TTL: %s"), *Resolved.RelativePath);
+
+		if (bIsLockAndSync && Watcher.IsValid() && !Watcher->IsWatcherActive(Resolved.LockKey))
+		{
+			Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
+		}
+
+		Client->Refresh(Resolved.LockKey, Ttl,
+			[Path = Resolved.RelativePath](bool bSuccess)
+			{
+				if (!bSuccess)
+				{
+					UE_LOG(LogPoorforce, Warning, TEXT("Lock TTL refresh failed: %s"), *Path);
+				}
+			});
+		return;
+	}
+
+	// Case 3: blocked. Editor is about to open (we haven't returned yet).
+	// Defer to next tick so the dialog and CloseAllEditorsForAsset run AFTER
+	// the editor instance is actually created.
+	const PoorforceLock::FLockEntry EntryCopy = *Entry;
+	const FResolvedAsset ResolvedCopy = Resolved;
+
+	FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateLambda(
+			[this, ResolvedCopy, EntryCopy, WeakAsset](float) -> bool
+			{
+				HandleBlockedByOther(ResolvedCopy, EntryCopy, WeakAsset);
+				return false;
+			}),
+		0.0f);
+}
+
+void FLockWorkflow::AcquireAsyncNoDownload(UObject* Asset, const FResolvedAsset& Resolved)
+{
+	const FString MyUserId = UserId;
+	TWeakObjectPtr<UObject> WeakAsset(Asset);
+
+	Client->TryAcquire(Resolved.LockKey, MyUserId, GetTtlForMode(Resolved.Match->Mode),
+		[this, Resolved, MyUserId, WeakAsset](PoorforceLock::EAcquireResult Result)
 		{
 			switch (Result)
 			{
@@ -139,16 +328,9 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload)
 				OwnedLockKeys.Add(Resolved.LockKey);
 				UE_LOG(LogPoorforce, Log, TEXT("[Case 1] Lock acquired: %s"), *Resolved.RelativePath);
 
-				if (Resolved.Match->Mode == EPoorforcePathMode::LockAndSync)
+				if (Resolved.Match->Mode == EPoorforcePathMode::LockAndSync && Watcher.IsValid())
 				{
-					if (Watcher.IsValid())
-					{
-						Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
-					}
-					if (!bSkipInitialDownload)
-					{
-						StartDownloadAndReopen(Resolved, WeakAsset);
-					}
+					Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
 				}
 				return;
 
@@ -174,18 +356,16 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload)
 						OwnedLockKeys.Add(Resolved.LockKey);
 						UE_LOG(LogPoorforce, Log, TEXT("[Case 2] Lock re-entry, refreshing TTL: %s"), *Resolved.RelativePath);
 
-						if (Resolved.Match->Mode == EPoorforcePathMode::LockAndSync && Watcher.IsValid() && !Watcher->IsWatcherActive(Resolved.LockKey))
+						if (Resolved.Match->Mode == EPoorforcePathMode::LockAndSync && Watcher.IsValid()
+							&& !Watcher->IsWatcherActive(Resolved.LockKey))
 						{
 							Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
 						}
 
 						Client->Refresh(Resolved.LockKey, GetTtlForMode(Resolved.Match->Mode),
-							[Path = Resolved.RelativePath](bool bSuccess)
+							[Path = Resolved.RelativePath](bool ok)
 							{
-								if (!bSuccess)
-								{
-									UE_LOG(LogPoorforce, Warning, TEXT("Lock TTL refresh failed: %s"), *Path);
-								}
+								if (!ok) UE_LOG(LogPoorforce, Warning, TEXT("Lock TTL refresh failed: %s"), *Path);
 							});
 						return;
 					}
@@ -195,6 +375,34 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload)
 		});
 }
 
+bool FLockWorkflow::DownloadSync(const FString& LocalPath, const FString& RemotePath)
+{
+	if (!Rclone.IsValid()) return false;
+	if (LocalPath.IsEmpty() || RemotePath.IsEmpty()) return false;
+
+	bool bDone = false;
+	bool bSuccess = false;
+
+	Rclone->StartCopyTo(
+		FRcloneProcessManager::EDirection::Download,
+		LocalPath,
+		RemotePath,
+		[&bDone, &bSuccess](bool ok, int32, const FString&)
+		{
+			bSuccess = ok;
+			bDone = true;
+		});
+
+	PumpUntil(bDone);
+
+	if (bSuccess)
+	{
+		UE_LOG(LogPoorforce, Log, TEXT("Download complete: %s"), *RemotePath);
+	}
+
+	return bSuccess;
+}
+
 void FLockWorkflow::HandleAssetClosed(UObject* Asset)
 {
 	if (!Client.IsValid()) return;
@@ -202,9 +410,15 @@ void FLockWorkflow::HandleAssetClosed(UObject* Asset)
 	FResolvedAsset Resolved;
 	if (!Resolve(Asset, Resolved)) return;
 
+	if (OpeningAssetPackageNames.Contains(Resolved.PackageName))
+	{
+		UE_LOG(LogPoorforce, Verbose, TEXT("Close suppressed (toolkit still initialising): %s"), *Resolved.RelativePath);
+		return;
+	}
+
 	if (InFlightSyncs.Contains(Resolved.LockKey))
 	{
-		UE_LOG(LogPoorforce, Verbose, TEXT("Ignore close — programmatic close during sync: %s"), *Resolved.RelativePath);
+		UE_LOG(LogPoorforce, Verbose, TEXT("Ignore close — operation in flight: %s"), *Resolved.RelativePath);
 		return;
 	}
 
@@ -219,8 +433,7 @@ void FLockWorkflow::HandleAssetClosed(UObject* Asset)
 		return;
 	}
 
-	// LockOnly: 닫아도 락 유지 (PR 머지 전까지).
-	// 해제는 콘솔 커맨드 Poorforce.ReleaseLock 또는 CI 워크플로우에서 직접 DEL.
+	// LockOnly: keep lock until manual release or PR merge.
 	UE_LOG(LogPoorforce, Log, TEXT("LockOnly close — keeping lock until manual release: %s"), *Resolved.RelativePath);
 }
 
@@ -320,62 +533,6 @@ void FLockWorkflow::HandleBlockedByOther(
 		});
 }
 
-void FLockWorkflow::StartDownloadAndReopen(const FResolvedAsset& Resolved, TWeakObjectPtr<UObject> WeakAsset)
-{
-	if (!Rclone.IsValid())
-	{
-		UE_LOG(LogPoorforce, Warning, TEXT("LockAndSync but rclone manager is missing — skipping download: %s"), *Resolved.RelativePath);
-		return;
-	}
-
-	if (Resolved.LocalFilePath.IsEmpty() || Resolved.RemoteFilePath.IsEmpty())
-	{
-		UE_LOG(LogPoorforce, Warning, TEXT("LockAndSync path resolution failed — skipping download: %s"), *Resolved.RelativePath);
-		return;
-	}
-
-	InFlightSyncs.Add(Resolved.LockKey);
-
-	CloseAssetEditor(WeakAsset);
-
-	NotifyUser(FString::Printf(TEXT("Syncing %s from remote..."), *Resolved.RelativePath));
-
-	Rclone->StartCopyTo(
-		FRcloneProcessManager::EDirection::Download,
-		Resolved.LocalFilePath,
-		Resolved.RemoteFilePath,
-		[this, Resolved, WeakAsset](bool bSuccess, int32 ExitCode, const FString& Output)
-		{
-			if (bSuccess)
-			{
-				UE_LOG(LogPoorforce, Log, TEXT("Download complete: %s"), *Resolved.RelativePath);
-
-				CopyNextSidecar(Resolved, static_cast<int32>(FRcloneProcessManager::EDirection::Download), 0,
-					[this, LockKey = Resolved.LockKey, WeakAsset]()
-					{
-						InFlightSyncs.Remove(LockKey);
-						ReopenAssetEditor(WeakAsset);
-					});
-				return;
-			}
-
-			InFlightSyncs.Remove(Resolved.LockKey);
-
-			UE_LOG(LogPoorforce, Warning,
-				TEXT("Download failed for %s (exit=%d). Releasing lock so others aren't blocked."),
-				*Resolved.RelativePath, ExitCode);
-
-			NotifyUserWarning(FString::Printf(TEXT("Download failed: %s"), *Resolved.RelativePath));
-
-			Client->Release(Resolved.LockKey,
-				[this, Key = Resolved.LockKey](bool)
-				{
-					OwnedLockKeys.Remove(Key);
-					if (Watcher.IsValid()) Watcher->SignalWatcherExit(Key);
-				});
-		});
-}
-
 void FLockWorkflow::StartUploadAndRelease(const FResolvedAsset& Resolved)
 {
 	if (!Rclone.IsValid())
@@ -383,7 +540,11 @@ void FLockWorkflow::StartUploadAndRelease(const FResolvedAsset& Resolved)
 		UE_LOG(LogPoorforce, Warning, TEXT("LockAndSync close but rclone manager missing — releasing lock without upload: %s"), *Resolved.RelativePath);
 
 		Client->Release(Resolved.LockKey,
-			[this, Key = Resolved.LockKey](bool) { OwnedLockKeys.Remove(Key); });
+			[this, Key = Resolved.LockKey](bool)
+			{
+				OwnedLockKeys.Remove(Key);
+				if (Watcher.IsValid()) Watcher->SignalWatcherExit(Key);
+			});
 		return;
 	}
 
@@ -392,7 +553,11 @@ void FLockWorkflow::StartUploadAndRelease(const FResolvedAsset& Resolved)
 		UE_LOG(LogPoorforce, Warning, TEXT("LockAndSync close path resolution failed — releasing lock without upload: %s"), *Resolved.RelativePath);
 
 		Client->Release(Resolved.LockKey,
-			[this, Key = Resolved.LockKey](bool) { OwnedLockKeys.Remove(Key); });
+			[this, Key = Resolved.LockKey](bool)
+			{
+				OwnedLockKeys.Remove(Key);
+				if (Watcher.IsValid()) Watcher->SignalWatcherExit(Key);
+			});
 		return;
 	}
 
@@ -528,17 +693,4 @@ void FLockWorkflow::CloseAssetEditor(TWeakObjectPtr<UObject> WeakAsset)
 	if (!IsValid(Subsystem)) return;
 
 	Subsystem->CloseAllEditorsForAsset(Asset);
-}
-
-void FLockWorkflow::ReopenAssetEditor(TWeakObjectPtr<UObject> WeakAsset)
-{
-	if (GEditor == nullptr) return;
-
-	UObject* Asset = WeakAsset.Get();
-	if (!IsValid(Asset)) return;
-
-	UAssetEditorSubsystem* Subsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
-	if (!IsValid(Subsystem)) return;
-
-	Subsystem->OpenEditorForAsset(Asset);
 }

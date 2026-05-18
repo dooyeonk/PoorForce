@@ -40,6 +40,7 @@ void FAssetEditorInterceptor::Unregister()
 		{
 			Subsystem->OnAssetEditorRequestedOpen().Remove(RequestedOpenHandle);
 			Subsystem->OnAssetClosedInEditor().Remove(ClosedInEditorHandle);
+			Subsystem->OnAssetEditorOpened().Remove(OpenedInEditorHandle);
 		}
 		bSubscribedToSubsystem = false;
 	}
@@ -81,6 +82,13 @@ void FAssetEditorInterceptor::SubscribeAssetEditorSubsystem()
 
 	RequestedOpenHandle = Subsystem->OnAssetEditorRequestedOpen().AddRaw(this, &FAssetEditorInterceptor::OnAssetEditorRequestedOpen);
 	ClosedInEditorHandle = Subsystem->OnAssetClosedInEditor().AddRaw(this, &FAssetEditorInterceptor::OnAssetClosedInEditor);
+
+	OpenedInEditorHandle = Subsystem->OnAssetEditorOpened().AddLambda(
+		[this](UObject* Asset)
+		{
+			if (Workflow == nullptr) return;
+			Workflow->HandleAssetEditorOpened(Asset);
+		});
 
 	bSubscribedToSubsystem = true;
 	UE_LOG(LogPoorforce, Log, TEXT("Subscribed to AssetEditorSubsystem events"));

@@ -16,6 +16,7 @@ private:
 
 	FDelegateHandle RequestedOpenHandle;
 	FDelegateHandle ClosedInEditorHandle;
+	FDelegateHandle OpenedInEditorHandle;
 	FDelegateHandle RenamedHandle;
 	FDelegateHandle InMemoryCreatedHandle;
 	FDelegateHandle PostEngineInitHandle;

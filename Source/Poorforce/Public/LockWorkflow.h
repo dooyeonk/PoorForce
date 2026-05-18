@@ -13,6 +13,7 @@ enum class EPoorforcePathMode : uint8;
 class FLockServerClient;
 class FRcloneProcessManager;
 class FDetachedWatcherSpawner;
+struct FScopedSlowTask;
 struct FPoorforceConfig;
 struct FPoorforceManagedPath;
 class UObject;
@@ -27,7 +28,10 @@ public:
 		TSharedPtr<FDetachedWatcherSpawner> InWatcher,
 		FString InUserId);
 
+	~FLockWorkflow();
+
 	void HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload = false);
+	void HandleAssetEditorOpened(UObject* Asset);
 	void HandleAssetClosed(UObject* Asset);
 	void HandleAssetRenamed(const FString& OldPackageName, UObject* NewAsset);
 
@@ -54,12 +58,15 @@ private:
 
 	TSet<FString> OwnedLockKeys;
 	TSet<FString> InFlightSyncs;
+	TSet<FString> OpeningAssetPackageNames;
 
 	int32 GetTtlForMode(EPoorforcePathMode Mode) const;
 
 	bool Resolve(UObject* Asset, FResolvedAsset& Out) const;
 
-	void StartDownloadAndReopen(const FResolvedAsset& Resolved, TWeakObjectPtr<UObject> WeakAsset);
+	void SyncPrefetch(UObject* Asset, const FResolvedAsset& Resolved);
+	void AcquireAsyncNoDownload(UObject* Asset, const FResolvedAsset& Resolved);
+
 	void StartUploadAndRelease(const FResolvedAsset& Resolved);
 
 	void CopyNextSidecar(
@@ -67,6 +74,8 @@ private:
 		int32 Direction,
 		int32 Index,
 		TFunction<void()> OnAllDone);
+
+	bool DownloadSync(const FString& LocalPath, const FString& RemotePath);
 
 	void HandleBlockedByOther(
 		const FResolvedAsset& Resolved,
@@ -76,6 +85,5 @@ private:
 	void NotifyUser(const FString& Message) const;
 	void NotifyUserWarning(const FString& Message) const;
 
-	static void ReopenAssetEditor(TWeakObjectPtr<UObject> WeakAsset);
 	static void CloseAssetEditor(TWeakObjectPtr<UObject> WeakAsset);
 };
