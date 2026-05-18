@@ -17,8 +17,9 @@ unlock_one() {
     local path="$1"
     if [[ -z "$path" ]]; then return 0; fi
 
+    # --force: 락 owner != 호출자여도 해제 (CI 컨텍스트에서 PR 머지 후 해제하는 흐름이라 OK)
     local output
-    if output=$(git lfs unlock "$path" 2>&1); then
+    if output=$(git lfs unlock --force "$path" 2>&1); then
         echo "unlocked: $path"
     else
         echo "skip $path — $output" >&2

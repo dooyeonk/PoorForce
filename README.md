@@ -116,6 +116,9 @@ on:
     types: [closed]
     branches: [main]
 
+permissions:
+  contents: write   # git lfs unlock API 호출에 필요
+
 jobs:
   release:
     if: github.event.pull_request.merged == true
@@ -124,6 +127,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: true
 
       - name: Compute lock keys from changed files
         id: keys
@@ -171,6 +175,12 @@ jobs:
 ### 다른 사람 락 강제 해제
 
 차단 다이얼로그에서 `[강제 해제…]` 버튼. 2단계 확인 후 사유 입력 (선택). Discord webhook 설정돼 있으면 원 작업자에게 알림 전송.
+
+### CI 에서 LFS unlock 권한 거부
+
+- 워크플로우의 `permissions: contents: write` 명시 확인
+- 스크립트 내부 `git lfs unlock --force` 옵션이 들어가있는지 확인 (락 owner != actor 케이스 위해)
+- repo 의 Branch protection rule에서 LFS lock 관련 권한 제한이 없는지 확인
 
 ### rclone 실행이 안 됨
 
