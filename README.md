@@ -168,3 +168,4 @@ LockAndSync 모드에서는 디태치드 워처가 자동으로 업로드 + 락 
 - **Upstash 토큰이 디스크에 평문 저장** (PoorforceConfig.json + 임시 워처 스크립트). git 에 안 올라가도록 `.gitignore` 필수
 - **Content Browser 락 오버레이 없음** (Redis 호출 비용 문제로 보류)
 - **워처가 죽으면 락 영구 유지** → TTL 이 최후 안전망
+- **에셋 삭제 처리 없음** — Pre/PostDelete 훅 미구현. LockAndSync 삭제 시 업로드 실패 다이얼로그 뜨고 리모트 파일 안 지워짐. 일단 삭제 피하기
