@@ -189,4 +189,9 @@ LockAndSync 모드에서는 디태치드 워처가 자동으로 업로드 + 락 
 - **Content Browser 락 오버레이 없음** (Redis 호출 비용 문제로 보류)
 - **워처가 죽으면 락 영구 유지** → TTL 이 최후 안전망
 - **에셋 삭제 처리 없음** — Pre/PostDelete 훅 미구현. LockAndSync 삭제 시 업로드 실패 다이얼로그 뜨고 리모트 파일 안 지워짐. 일단 삭제 피하기
-- **맵(.umap) 락 충돌 시 차단 못 함** — World 에셋은 main viewport에 직접 로드돼서 락 다이얼로그가 떠도 맵 자체는 이미 메모리에 올라옴. 시스템은 안전 (락 없으니 업로드/LFS 안 함) 이지만 사용자가 헛수고 가능. **default map 같이 부팅 시 자동 로드되는 맵은 수정 대상에서 빼는 것을 권장**
+- **맵(.umap) 락 처리 한계** — World 에셋은 main viewport에 직접 로드되므로:
+  - **Content Browser 더블클릭** 만 락 hook 발화. Redis 락 + LFS 락 정상 동작
+  - **default map 자동 로드 / File > Open Level / LoadMap 호출** 은 hook 없음 → 락 안 잡힘
+  - 락 충돌 다이얼로그가 떠도 맵 자체는 이미 로드돼서 차단 못 함
+  - 시스템 정합성은 유지 (락 없으니 LFS lock도 안 시도 → 다른 사람 변경 안 덮어씀)
+  - **운영 규약 권장**: default map 은 수정하지 않는 placeholder 로 두고, 작업할 맵은 항상 Content Browser 에서 명시적으로 열기
