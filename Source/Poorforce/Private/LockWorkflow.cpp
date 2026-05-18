@@ -31,6 +31,56 @@ FLockWorkflow::FLockWorkflow(
 {
 }
 
+int32 FLockWorkflow::GetTtlForMode(EPoorforcePathMode Mode) const
+{
+	return Mode == EPoorforcePathMode::LockOnly
+		? Config.LockOnlyTtlSeconds
+		: Config.LockAndSyncTtlSeconds;
+}
+
+TArray<FString> FLockWorkflow::GetOwnedLockKeys() const
+{
+	TArray<FString> Out;
+	Out.Reserve(OwnedLockKeys.Num());
+	for (const FString& Key : OwnedLockKeys)
+	{
+		Out.Add(Key);
+	}
+	Out.Sort();
+	return Out;
+}
+
+void FLockWorkflow::ManualReleaseLock(const FString& LockKey)
+{
+	if (!Client.IsValid())
+	{
+		UE_LOG(LogPoorforce, Warning, TEXT("ManualReleaseLock: client not initialised"));
+		return;
+	}
+
+	if (!OwnedLockKeys.Contains(LockKey))
+	{
+		UE_LOG(LogPoorforce, Warning, TEXT("ManualReleaseLock: '%s' is not owned by this session"), *LockKey);
+		return;
+	}
+
+	Client->Release(LockKey,
+		[this, LockKey](bool bReleased)
+		{
+			OwnedLockKeys.Remove(LockKey);
+			if (Watcher.IsValid()) Watcher->SignalWatcherExit(LockKey);
+
+			if (bReleased)
+			{
+				UE_LOG(LogPoorforce, Log, TEXT("Manual release succeeded: %s"), *LockKey);
+			}
+			else
+			{
+				UE_LOG(LogPoorforce, Warning, TEXT("Manual release failed (removed from owned set anyway): %s"), *LockKey);
+			}
+		});
+}
+
 bool FLockWorkflow::Resolve(UObject* Asset, FResolvedAsset& Out) const
 {
 	if (!IsValid(Asset)) return false;
@@ -78,8 +128,9 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload)
 
 	const FString MyUserId = UserId;
 	TWeakObjectPtr<UObject> WeakAsset(Asset);
+	const int32 Ttl = GetTtlForMode(Resolved.Match->Mode);
 
-	Client->TryAcquire(Resolved.LockKey, MyUserId, LockTtlSeconds,
+	Client->TryAcquire(Resolved.LockKey, MyUserId, Ttl,
 		[this, Resolved, MyUserId, WeakAsset, bSkipInitialDownload](PoorforceLock::EAcquireResult Result)
 		{
 			switch (Result)
@@ -128,7 +179,7 @@ void FLockWorkflow::HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload)
 							Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
 						}
 
-						Client->Refresh(Resolved.LockKey, LockTtlSeconds,
+						Client->Refresh(Resolved.LockKey, GetTtlForMode(Resolved.Match->Mode),
 							[Path = Resolved.RelativePath](bool bSuccess)
 							{
 								if (!bSuccess)
@@ -168,20 +219,9 @@ void FLockWorkflow::HandleAssetClosed(UObject* Asset)
 		return;
 	}
 
-	Client->Release(Resolved.LockKey,
-		[this, Key = Resolved.LockKey, Path = Resolved.RelativePath](bool bSuccess)
-		{
-			OwnedLockKeys.Remove(Key);
-
-			if (bSuccess)
-			{
-				UE_LOG(LogPoorforce, Log, TEXT("Lock released: %s"), *Path);
-			}
-			else
-			{
-				UE_LOG(LogPoorforce, Warning, TEXT("Lock release failed (removed from owned set anyway): %s"), *Path);
-			}
-		});
+	// LockOnly: 닫아도 락 유지 (PR 머지 전까지).
+	// 해제는 콘솔 커맨드 Poorforce.ReleaseLock 또는 CI 워크플로우에서 직접 DEL.
+	UE_LOG(LogPoorforce, Log, TEXT("LockOnly close — keeping lock until manual release: %s"), *Resolved.RelativePath);
 }
 
 void FLockWorkflow::HandleAssetRenamed(const FString& OldPackageName, UObject* NewAsset)

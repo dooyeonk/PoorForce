@@ -9,6 +9,7 @@ namespace PoorforceLock
 	struct FLockEntry;
 }
 
+enum class EPoorforcePathMode : uint8;
 class FLockServerClient;
 class FRcloneProcessManager;
 class FDetachedWatcherSpawner;
@@ -29,6 +30,9 @@ public:
 	void HandleAssetOpened(UObject* Asset, bool bSkipInitialDownload = false);
 	void HandleAssetClosed(UObject* Asset);
 	void HandleAssetRenamed(const FString& OldPackageName, UObject* NewAsset);
+
+	TArray<FString> GetOwnedLockKeys() const;
+	void ManualReleaseLock(const FString& LockKey);
 
 private:
 	struct FResolvedAsset
@@ -51,7 +55,7 @@ private:
 	TSet<FString> OwnedLockKeys;
 	TSet<FString> InFlightSyncs;
 
-	static constexpr int32 LockTtlSeconds = 259200;
+	int32 GetTtlForMode(EPoorforcePathMode Mode) const;
 
 	bool Resolve(UObject* Asset, FResolvedAsset& Out) const;
 
