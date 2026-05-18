@@ -70,12 +70,20 @@
 플러그인은 **락만** 담당. 파일은 사용자가 git LFS 로 직접 관리.
 
 ```
-열기      → 락 획득 → 작업
-저장      → (자동)
-닫기      → 락 유지 (PR 머지 전까지)
-push      → PR 생성 → 리뷰 → 머지
-머지 후   → 락 해제 (콘솔 커맨드 OR CI 워크플로우)
+열기       → Redis 락 획득 → 작업
+저장 (Ctrl+S)
+           → git lfs lock 자동 시도 (실패 시 notification 경고)
+닫기       → 변경(저장)이 있었으면 Redis 락 유지 (PR 머지 전까지)
+           → 변경 없으면 (그냥 열어봄) Redis 락 즉시 해제
+push       → PR 생성 → 리뷰 → 머지
+머지 후    → Redis DEL + git lfs unlock (콘솔 OR CI 워크플로우)
 ```
+
+**LFS 락 처리 디테일:**
+- 저장 시 자동으로 `git lfs lock <path>` 호출
+- 이미 내가 가진 락이면 조용히 진행
+- 셋업 문제/다른 사람 소유/네트워크 오류 시 notification 경고 (작업은 계속 가능)
+- LFS 락 해제는 PR 머지 후 `scripts/release-lfs-locks.sh` 로
 
 ### LockAndSync 모드 (예: `Content/ThirdParty/PaidAssets/`)
 
@@ -127,12 +135,24 @@ jobs:
             > keys.txt
           echo "count=$(wc -l < keys.txt)" >> "$GITHUB_OUTPUT"
 
-      - name: Release locks
+      - name: Release Redis locks
         if: steps.keys.outputs.count != '0'
         env:
           UPSTASH_URL: ${{ secrets.UPSTASH_URL }}
           UPSTASH_TOKEN: ${{ secrets.UPSTASH_TOKEN }}
         run: cat keys.txt | ./Plugins/Poorforce/scripts/release-locks.sh
+
+      - name: Compute LFS paths from changed files
+        id: lfspaths
+        run: |
+          git diff --name-only origin/main...HEAD \
+            | grep -E '^Content/GY/.*\.(uasset|umap)$' \
+            > lfs_paths.txt
+          echo "count=$(wc -l < lfs_paths.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Release LFS locks
+        if: steps.lfspaths.outputs.count != '0'
+        run: cat lfs_paths.txt | ./Plugins/Poorforce/scripts/release-lfs-locks.sh
 ```
 
 **참고:**
