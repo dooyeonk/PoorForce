@@ -8,6 +8,7 @@
 #include "RcloneProcessManager.h"
 #include "DetachedWatcherSpawner.h"
 #include "DiscordNotifier.h"
+#include "GitLfsClient.h"
 #include "UI/PoorforceDialogs.h"
 
 #include "Editor.h"
@@ -18,8 +19,10 @@
 #include "Misc/ScopedSlowTask.h"
 #include "Containers/Ticker.h"
 #include "HAL/PlatformProcess.h"
+#include "Misc/Paths.h"
 #include "UObject/Object.h"
 #include "UObject/Package.h"
+#include "UObject/ObjectSaveContext.h"
 
 namespace
 {
@@ -56,10 +59,21 @@ FLockWorkflow::FLockWorkflow(
 	, Watcher(MoveTemp(InWatcher))
 	, UserId(MoveTemp(InUserId))
 {
+	PackageSavedHandle = UPackage::PackageSavedWithContextEvent.AddLambda(
+		[this](const FString&, UPackage* Package, FObjectPostSaveContext)
+		{
+			if (!IsValid(Package)) return;
+			SavedPackageNamesThisSession.Add(Package->GetName());
+		});
 }
 
 FLockWorkflow::~FLockWorkflow()
 {
+	if (PackageSavedHandle.IsValid())
+	{
+		UPackage::PackageSavedWithContextEvent.Remove(PackageSavedHandle);
+		PackageSavedHandle.Reset();
+	}
 }
 
 int32 FLockWorkflow::GetTtlForMode(EPoorforcePathMode Mode) const
@@ -95,6 +109,8 @@ void FLockWorkflow::ManualReleaseLock(const FString& LockKey)
 		return;
 	}
 
+	// 참고: 여기서는 LFS unlock 안 함 (LockKey만으로 디스크 파일 경로 정확히 못 구함).
+	// LFS unlock 은 닫기 시(변경 없음 분기) 또는 CI의 release-lfs-locks.sh 에서 처리.
 	Client->Release(LockKey,
 		[this, LockKey](bool bReleased)
 		{
@@ -138,6 +154,23 @@ bool FLockWorkflow::Resolve(UObject* Asset, FResolvedAsset& Out) const
 		for (const PoorforcePathResolver::FSidecarPair& Pair : Sidecars)
 		{
 			Out.SidecarPaths.Emplace(Pair.LocalPath, Pair.RemotePath);
+		}
+	}
+	else if (Out.Match->Mode == EPoorforcePathMode::LockOnly)
+	{
+		// LockOnly에서 git lfs lock 인자로 쓸 프로젝트 루트 기준 상대경로 계산
+		FString AbsoluteFile;
+		if (PoorforcePathResolver::MakeLocalFilePath(Out.PackageName, Asset, AbsoluteFile))
+		{
+			const FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+			FString GitPath = FPaths::ConvertRelativePathToFull(AbsoluteFile);
+			if (GitPath.StartsWith(ProjectDir, ESearchCase::IgnoreCase))
+			{
+				GitPath = GitPath.RightChop(ProjectDir.Len());
+			}
+			GitPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+			while (GitPath.StartsWith(TEXT("/"))) GitPath.RightChopInline(1);
+			Out.GitRelativeFilePath = GitPath;
 		}
 	}
 
@@ -209,6 +242,8 @@ void FLockWorkflow::SyncPrefetch(UObject* Asset, const FResolvedAsset& Resolved)
 	{
 		OwnedLockKeys.Add(Resolved.LockKey);
 		UE_LOG(LogPoorforce, Log, TEXT("[Case 1] Lock acquired: %s"), *Resolved.RelativePath);
+
+		MaybeAcquireLfsLock(Resolved);
 
 		if (bIsLockAndSync)
 		{
@@ -328,6 +363,8 @@ void FLockWorkflow::AcquireAsyncNoDownload(UObject* Asset, const FResolvedAsset&
 				OwnedLockKeys.Add(Resolved.LockKey);
 				UE_LOG(LogPoorforce, Log, TEXT("[Case 1] Lock acquired: %s"), *Resolved.RelativePath);
 
+				MaybeAcquireLfsLock(Resolved);
+
 				if (Resolved.Match->Mode == EPoorforcePathMode::LockAndSync && Watcher.IsValid())
 				{
 					Watcher->SpawnWatcher(Resolved.LockKey, Resolved.LocalFilePath, Resolved.RemoteFilePath);
@@ -433,8 +470,32 @@ void FLockWorkflow::HandleAssetClosed(UObject* Asset)
 		return;
 	}
 
-	// LockOnly: keep lock until manual release or PR merge.
-	UE_LOG(LogPoorforce, Log, TEXT("LockOnly close — keeping lock until manual release: %s"), *Resolved.RelativePath);
+	// LockOnly: 세션 중 저장이 한 번도 없었으면 (=변경 없음) 락 즉시 해제.
+	// 저장된 적이 있으면 유지 (PR 머지 전까지) → 콘솔 커맨드 또는 CI에서 해제.
+	if (!SavedPackageNamesThisSession.Contains(Resolved.PackageName))
+	{
+		UE_LOG(LogPoorforce, Log, TEXT("LockOnly close — no changes, releasing lock: %s"), *Resolved.RelativePath);
+
+		MaybeReleaseLfsLock(Resolved);
+
+		Client->Release(Resolved.LockKey,
+			[this, Key = Resolved.LockKey, Path = Resolved.RelativePath](bool bReleased)
+			{
+				OwnedLockKeys.Remove(Key);
+
+				if (bReleased)
+				{
+					UE_LOG(LogPoorforce, Log, TEXT("Lock released (no changes): %s"), *Path);
+				}
+				else
+				{
+					UE_LOG(LogPoorforce, Warning, TEXT("Lock release failed (no changes): %s"), *Path);
+				}
+			});
+		return;
+	}
+
+	UE_LOG(LogPoorforce, Log, TEXT("LockOnly close — keeping lock (changes saved this session): %s"), *Resolved.RelativePath);
 }
 
 void FLockWorkflow::HandleAssetRenamed(const FString& OldPackageName, UObject* NewAsset)
@@ -680,6 +741,57 @@ void FLockWorkflow::NotifyUserWarning(const FString& Message) const
 	{
 		Item->SetCompletionState(SNotificationItem::CS_Fail);
 	}
+}
+
+void FLockWorkflow::MaybeAcquireLfsLock(const FResolvedAsset& Resolved)
+{
+	if (Resolved.Match == nullptr || Resolved.Match->Mode != EPoorforcePathMode::LockOnly) return;
+	if (Resolved.GitRelativeFilePath.IsEmpty()) return;
+
+	const FString GitPath      = Resolved.GitRelativeFilePath;
+	const FString RelativePath = Resolved.RelativePath;
+
+	PoorforceGitLfs::TryLock(GitPath,
+		[this, GitPath, RelativePath](const PoorforceGitLfs::FLockOutcome& Outcome)
+		{
+			switch (Outcome.Result)
+			{
+			case PoorforceGitLfs::ELockResult::Success:
+				UE_LOG(LogPoorforce, Log, TEXT("LFS lock acquired: %s"), *GitPath);
+				return;
+
+			case PoorforceGitLfs::ELockResult::AlreadyOwnedByMe:
+				UE_LOG(LogPoorforce, Verbose, TEXT("LFS lock already mine: %s"), *GitPath);
+				return;
+
+			case PoorforceGitLfs::ELockResult::OwnedByOther:
+				UE_LOG(LogPoorforce, Warning, TEXT("LFS lock owned by other (exit=%d): %s\n%s"),
+					Outcome.ExitCode, *GitPath, *Outcome.Stderr);
+				NotifyUserWarning(FString::Printf(TEXT("LFS 락이 다른 사람에게 있음: %s"), *RelativePath));
+				return;
+
+			case PoorforceGitLfs::ELockResult::SetupError:
+				UE_LOG(LogPoorforce, Warning, TEXT("LFS lock setup error (exit=%d): %s\n%s"),
+					Outcome.ExitCode, *GitPath, *Outcome.Stderr);
+				NotifyUserWarning(FString::Printf(TEXT("LFS 셋업 문제로 락 실패: %s"), *RelativePath));
+				return;
+
+			case PoorforceGitLfs::ELockResult::Other:
+			default:
+				UE_LOG(LogPoorforce, Warning, TEXT("LFS lock failed (exit=%d): %s\n%s"),
+					Outcome.ExitCode, *GitPath, *Outcome.Stderr);
+				NotifyUserWarning(FString::Printf(TEXT("LFS 락 실패: %s"), *RelativePath));
+				return;
+			}
+		});
+}
+
+void FLockWorkflow::MaybeReleaseLfsLock(const FResolvedAsset& Resolved)
+{
+	if (Resolved.Match == nullptr || Resolved.Match->Mode != EPoorforcePathMode::LockOnly) return;
+	if (Resolved.GitRelativeFilePath.IsEmpty()) return;
+
+	PoorforceGitLfs::TryUnlock(Resolved.GitRelativeFilePath);
 }
 
 void FLockWorkflow::CloseAssetEditor(TWeakObjectPtr<UObject> WeakAsset)

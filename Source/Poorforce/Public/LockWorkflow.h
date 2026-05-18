@@ -46,6 +46,7 @@ private:
 		FString LockKey;
 		FString LocalFilePath;
 		FString RemoteFilePath;
+		FString GitRelativeFilePath;   // LockOnly에서 git lfs lock 인자용
 		TArray<TPair<FString, FString>> SidecarPaths;
 		const FPoorforceManagedPath* Match = nullptr;
 	};
@@ -59,6 +60,9 @@ private:
 	TSet<FString> OwnedLockKeys;
 	TSet<FString> InFlightSyncs;
 	TSet<FString> OpeningAssetPackageNames;
+	TSet<FString> SavedPackageNamesThisSession;
+
+	FDelegateHandle PackageSavedHandle;
 
 	int32 GetTtlForMode(EPoorforcePathMode Mode) const;
 
@@ -84,6 +88,9 @@ private:
 
 	void NotifyUser(const FString& Message) const;
 	void NotifyUserWarning(const FString& Message) const;
+
+	void MaybeAcquireLfsLock(const FResolvedAsset& Resolved);
+	void MaybeReleaseLfsLock(const FResolvedAsset& Resolved);
 
 	static void CloseAssetEditor(TWeakObjectPtr<UObject> WeakAsset);
 };
