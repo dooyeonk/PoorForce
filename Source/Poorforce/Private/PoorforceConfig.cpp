@@ -1,6 +1,7 @@
 #include "PoorforceConfig.h"
 
 #include "PoorforceLog.h"
+#include "PoorforceTimeFormat.h"
 
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -73,6 +74,26 @@ namespace PoorforceConfigLoader
 		{
 			OutConfig.RcloneExecutable = RcloneExe;
 		}
+
+		auto ReadTtl = [&Root](const TCHAR* FieldName, int32& OutValue)
+		{
+			FString Raw;
+			if (!Root->TryGetStringField(FieldName, Raw) || Raw.IsEmpty()) return;
+
+			int32 Seconds = 0;
+			if (PoorforceTimeFormat::ParseDuration(Raw, Seconds))
+			{
+				OutValue = Seconds;
+			}
+			else
+			{
+				UE_LOG(LogPoorforce, Warning, TEXT("Invalid duration for %s: '%s' (using default %d sec)"),
+					FieldName, *Raw, OutValue);
+			}
+		};
+
+		ReadTtl(TEXT("LockOnlyTtl"), OutConfig.LockOnlyTtlSeconds);
+		ReadTtl(TEXT("LockAndSyncTtl"), OutConfig.LockAndSyncTtlSeconds);
 
 		const TArray<TSharedPtr<FJsonValue>>* ManagedPathsJson = nullptr;
 		if (Root->TryGetArrayField(TEXT("ManagedPaths"), ManagedPathsJson) && ManagedPathsJson != nullptr)

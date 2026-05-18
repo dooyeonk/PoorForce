@@ -21,6 +21,8 @@ struct FPoorforceConfig
 	FString UpstashToken;
 	FString LockKeyNamespace;
 	FString RcloneExecutable = TEXT("rclone");
+	int32 LockOnlyTtlSeconds = 604800;     // 7d
+	int32 LockAndSyncTtlSeconds = 259200;  // 3d
 	TArray<FPoorforceManagedPath> ManagedPaths;
 	FString DiscordWebhookUrl;
 
