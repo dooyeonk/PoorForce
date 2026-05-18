@@ -34,4 +34,6 @@ private:
 	TUniquePtr<FAssetEditorInterceptor> Interceptor;
 
 	FDelegateHandle PreExitHandle;
+
+	TArray<class IConsoleObject*> RegisteredConsoleCommands;
 };

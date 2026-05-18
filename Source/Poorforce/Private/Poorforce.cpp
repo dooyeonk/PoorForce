@@ -10,6 +10,7 @@
 #include "UI/PoorforceDialogs.h"
 
 #include "Editor.h"
+#include "HAL/IConsoleManager.h"
 
 DEFINE_LOG_CATEGORY(LogPoorforce);
 
@@ -47,6 +48,55 @@ void FPoorforceModule::StartupModule()
 			}
 		});
 
+	RegisteredConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("Poorforce.ListLocks"),
+		TEXT("List locks currently owned by this editor session."),
+		FConsoleCommandDelegate::CreateLambda(
+			[this]()
+			{
+				if (!Workflow.IsValid())
+				{
+					UE_LOG(LogPoorforce, Display, TEXT("Poorforce not initialised"));
+					return;
+				}
+
+				const TArray<FString> Keys = Workflow->GetOwnedLockKeys();
+				if (Keys.Num() == 0)
+				{
+					UE_LOG(LogPoorforce, Display, TEXT("No owned locks"));
+					return;
+				}
+
+				UE_LOG(LogPoorforce, Display, TEXT("Owned locks (%d):"), Keys.Num());
+				for (const FString& Key : Keys)
+				{
+					UE_LOG(LogPoorforce, Display, TEXT("  %s"), *Key);
+				}
+			}),
+		ECVF_Default));
+
+	RegisteredConsoleCommands.Add(IConsoleManager::Get().RegisterConsoleCommand(
+		TEXT("Poorforce.ReleaseLock"),
+		TEXT("Manually release a lock by key. Usage: Poorforce.ReleaseLock <key>"),
+		FConsoleCommandWithArgsDelegate::CreateLambda(
+			[this](const TArray<FString>& Args)
+			{
+				if (!Workflow.IsValid())
+				{
+					UE_LOG(LogPoorforce, Display, TEXT("Poorforce not initialised"));
+					return;
+				}
+
+				if (Args.Num() < 1)
+				{
+					UE_LOG(LogPoorforce, Display, TEXT("Usage: Poorforce.ReleaseLock <key>"));
+					return;
+				}
+
+				Workflow->ManualReleaseLock(Args[0]);
+			}),
+		ECVF_Default));
+
 	bEnabled = true;
 
 	UE_LOG(LogPoorforce, Log, TEXT("Poorforce ready. UserId='%s', ManagedPaths=%d, Rclone='%s'"),
@@ -55,6 +105,15 @@ void FPoorforceModule::StartupModule()
 
 void FPoorforceModule::ShutdownModule()
 {
+	for (IConsoleObject* Cmd : RegisteredConsoleCommands)
+	{
+		if (Cmd != nullptr)
+		{
+			IConsoleManager::Get().UnregisterConsoleObject(Cmd);
+		}
+	}
+	RegisteredConsoleCommands.Empty();
+
 	if (PreExitHandle.IsValid())
 	{
 		FEditorDelegates::OnEditorPreExit.Remove(PreExitHandle);
