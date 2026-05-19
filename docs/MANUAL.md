@@ -41,14 +41,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # 머지 커밋을 직접 체크아웃 (PR closed 이벤트에서 refs/pull/N/merge 가 stale 일 수 있어 base/merge SHA 로 명시)
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
           lfs: true
 
       - name: Compute lock keys from changed files
         id: keys
         run: |
+          # main 브랜치(base) 기준으로 이번 PR 머지 커밋에서 변경된 파일만 추출
           # Content/GY/Foo/Bar.uasset -> gy:asset:Foo/Bar
-          git diff --name-only origin/main...HEAD \
+          git diff --name-only \
+            ${{ github.event.pull_request.base.sha }} \
+            ${{ github.event.pull_request.merge_commit_sha }} \
             | grep -E '^Content/GY/.*\.(uasset|umap)$' \
             | sed -E 's|^Content/GY/||; s|\.(uasset|umap)$||; s|^|gy:asset:|' \
             > keys.txt
@@ -64,7 +69,10 @@ jobs:
       - name: Compute LFS paths from changed files
         id: lfspaths
         run: |
-          git diff --name-only origin/main...HEAD \
+          # 위와 동일하게 main 기준 PR 머지 커밋 diff 사용
+          git diff --name-only \
+            ${{ github.event.pull_request.base.sha }} \
+            ${{ github.event.pull_request.merge_commit_sha }} \
             | grep -E '^Content/GY/.*\.(uasset|umap)$' \
             > lfs_paths.txt
           echo "count=$(wc -l < lfs_paths.txt)" >> "$GITHUB_OUTPUT"
@@ -75,6 +83,8 @@ jobs:
 ```
 
 **참고:**
+- **기준 브랜치는 `main`** — 위 워크플로우는 `branches: [main]` 으로 필터링하고, diff 도 `pull_request.base.sha` (= PR 의 base 브랜치인 main 의 머지 직전 SHA) ↔ `pull_request.merge_commit_sha` (실제 머지 커밋) 을 비교한다. 다른 브랜치 (예: `develop`) 로 머지되는 PR 에도 락을 풀고 싶으면 `branches` 와 트리거 조건을 함께 조정할 것.
+- `origin/main...HEAD` 같은 ref 비교는 PR closed 이벤트에서 `refs/pull/N/merge` 가 stale 이거나 main 과 동일 트리가 되어 빈 diff 가 나올 수 있어 사용하지 않음.
 - `Content/GY/` 와 `gy:asset:` prefix는 `PoorforceConfig.json` 의 `ContentPath` / `LockKeyNamespace` 와 매칭되어야 함
 - Repo Secrets 에 `UPSTASH_URL`, `UPSTASH_TOKEN` 등록
 - `Content/ThirdParty/PaidAssets/` (LockAndSync) 는 git 에 없으므로 워크플로우 대상 아님
