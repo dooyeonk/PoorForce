@@ -338,27 +338,7 @@ flowchart LR
 
 ---
 
-## 핵심 설계 결정
-
-### 왜 더블클릭 시 LockAndSync 자동 다운로드를 안 하는가
-
-더블클릭 시 자동으로 받아 디스크를 덮어쓰면, 메모리에 이미 로드된 `UObject` 가 있을 때 에디터는 그 메모리 객체를 보여줌 — 다운로드한 새 디스크 파일 무시. 즉 *stale 메모리* 발생.
-
-**해결**: 더블클릭 시 `rclone check` 로 비교만, 다르면 명시적 Sync 요구. 사용자가 우클릭 → Sync 누르면 `UnloadPackages` 로 메모리 무효화 + 다운로드 → 다음 열기에 fresh 로드.
-
-### 왜 LockOnly 강제 해제는 안 보이게 했는가
-
-LockOnly 에는 Redis 락 + Git LFS 락 둘 다 있음. 일반 사용자에게 `git lfs unlock --force` 권한이 없는 GitHub repo 가 대부분 — 강제 해제 다이얼로그를 눌러도 Redis 만 풀리고 LFS 락은 그대로 남아 결국 push 단계에서 거부됨.
-
-**해결**: LockOnly 모드는 차단 다이얼로그에서 [강제 해제] 버튼 자체 숨김. LockAndSync 만 [강제 해제] 노출 (LFS 안 씀).
-
-### 왜 자체 메타데이터 파일 안 만드는가
-
-"각 사용자가 마지막으로 본 버전" 추적용 별도 메타데이터 파일을 만들지 않음. 디스크의 `.uasset` 자체가 진실 소스. `rclone check` 가 디스크 ↔ 드라이브 비교해서 stale 여부 판단. 부가 상태 파일 없음 = 동기화 이슈 없음.
-
----
-
-## 알려진 한계
+## 참고사항
 
 - **Windows 전용** (PowerShell 의존)
 - **Upstash 토큰이 디스크에 평문 저장** (PoorforceConfig.json + 임시 워처 스크립트). git 에 안 올라가도록 `.gitignore` 필수
@@ -366,7 +346,7 @@ LockOnly 에는 Redis 락 + Git LFS 락 둘 다 있음. 일반 사용자에게 `
 - **워처가 죽으면 락 영구 유지** → TTL 이 최후 안전망
 - **에셋 삭제 처리 없음** — Pre/PostDelete 훅 미구현. LockAndSync 삭제 시 업로드 실패 다이얼로그 뜨고 리모트 파일 안 지워짐. 일단 삭제 피하기
 - **LockAndSync 자동 메모리 갱신 없음** — 더블클릭 시 자동 다운로드 안 함. 다른 사람이 업로드한 거 받으려면 명시적으로 우클릭 → Poorforce → Sync 필요
-- **맵(.umap) 락 처리 한계** — World 에셋은 main viewport 에 직접 로드되므로:
+- **맵(.umap) 락 처리 미지원* — World 에셋은 main viewport 에 직접 로드되므로:
   - **Content Browser 더블클릭** 만 락 hook 발화. Redis 락 + LFS 락 정상 동작
   - **default map 자동 로드 / File > Open Level / LoadMap 호출** 은 hook 없음 → 락 안 잡힘
   - 락 충돌 다이얼로그가 떠도 맵 자체는 이미 로드돼서 차단 못 함
